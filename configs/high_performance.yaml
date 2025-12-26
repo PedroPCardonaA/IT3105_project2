@@ -10,18 +10,18 @@ network:
   features: [256, 256]  # Larger network
 
 training:
-  num_episodes: 5000
+  num_episodes: 50000
   learning_rate: 0.00005  # 5e-5, more conservative
   gamma: 0.99
   batch_size: 64
   buffer_size: 500000  # Larger buffer
-  learning_starts: 50000  # More initial exploration
+  learning_starts: 25000  # More initial exploration
   train_freq: 4
   target_update_freq: 2000
 
 exploration:
   epsilon_start: 1.0
-  epsilon_end: 0.01
+  epsilon_end: 0.05
   epsilon_decay_steps: 250000  # Slower decay
 
 logging:

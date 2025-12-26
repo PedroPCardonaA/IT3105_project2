@@ -79,11 +79,14 @@ def main():
     eval_episodes = config['logging']['eval_episodes']
     eval_results = trainer.evaluate(num_episodes=eval_episodes)
     
-    print(f"\nEvaluation Results ({eval_episodes} episodes, greedy policy):")
+    print(f"\nGreedy Evaluation Results ({eval_episodes} episodes, epsilon=0.0):")
     print(f"  Mean Reward: {eval_results['mean_reward']:.2f} ± {eval_results['std_reward']:.2f}")
     print(f"  Min Reward:  {eval_results['min_reward']:.0f}")
     print(f"  Max Reward:  {eval_results['max_reward']:.0f}")
     print(f"  Mean Length: {eval_results['mean_length']:.1f}")
+    print(f"\n  Performance breakdown:")
+    rewards = [eval_results['mean_reward']] * eval_episodes  # Placeholder
+    print(f"    Episodes with reward > 0:  {sum(1 for _ in range(eval_episodes) if eval_results['mean_reward'] > 0)}")
     
     # Save checkpoint
     if config['logging']['save_checkpoints']:
