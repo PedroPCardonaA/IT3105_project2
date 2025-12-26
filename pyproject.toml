@@ -1,11 +1,15 @@
 [project]
 name = "project-2"
 version = "0.1.0"
-description = "Add your description here"
+description = "Deep Q-Network (DQN) implementation with JAX/Flax for MinAtar environments"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "gymnasium>=1.2.3",
     "jax>=0.8.2",
     "minatar>=1.0.15",
+    "flax>=0.12.0",
+    "optax>=0.2.0",
+    "matplotlib>=3.10.0",
+    "pyyaml>=6.0",
 ]

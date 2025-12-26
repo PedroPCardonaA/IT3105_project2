@@ -1,0 +1,38 @@
+# DQN Training Configuration
+# Default configuration for standard DQN training
+
+# Environment settings
+environment:
+  name: breakout  # Options: breakout, asterix, freeway, seaquest, space_invaders
+  seed: 42
+
+# Network architecture
+network:
+  type: dueling  # Options: standard, dueling
+  features: [128, 128]  # Hidden layer dimensions
+
+# Training hyperparameters
+training:
+  num_episodes: 1000
+  learning_rate: 0.0001  # 1e-4
+  gamma: 0.99  # Discount factor
+  batch_size: 32
+  buffer_size: 100000
+  learning_starts: 10000  # Steps before training begins
+  train_freq: 4  # Steps between training updates
+  target_update_freq: 1000  # Steps between target network updates
+
+# Exploration settings
+exploration:
+  epsilon_start: 1.0
+  epsilon_end: 0.01
+  epsilon_decay_steps: 100000
+
+# Logging and evaluation
+logging:
+  eval_freq: 100  # Episodes between progress logs
+  eval_episodes: 10  # Episodes for final evaluation
+  save_checkpoints: true
+  checkpoint_dir: checkpoints
+  plot_results: true
+  plot_path: training_progress.png
