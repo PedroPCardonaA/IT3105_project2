@@ -1,12 +1,14 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from collections import deque
-from typing import Deque
+from typing import Deque, Dict, Any
 import argparse
 import random
 import numpy as np
 import jax
 import jax.numpy as jnp
+import yaml
+from pathlib import Path
 
 from minatar_env import MinatarEnv
 from network import MuZeroNet
@@ -15,19 +17,50 @@ from buffer import Episode, EpisodeBuffer, StepData
 from trainer import MuZeroTrainer, TrainConfig
 
 
+def load_config(config_path: str) -> Dict[str, Any]:
+    """Load configuration from YAML file."""
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        return config
+    except FileNotFoundError:
+        print(f"Error: Configuration file '{config_path}' not found.")
+        print(f"Available configs in configs/:")
+        import os
+        if os.path.exists('configs'):
+            for f in os.listdir('configs'):
+                if f.startswith('muzero') and f.endswith('.yaml'):
+                    print(f"  - configs/{f}")
+        raise
+    except yaml.YAMLError as e:
+        print(f"Error parsing YAML file '{config_path}': {e}")
+        raise
+
+
 @dataclass(frozen=True)
 class RunConfig:
-    env_name: str = "breakout"
-    seed: int = 42
-
-    num_episodes: int = 200
-    max_steps_per_episode: int = 500
-
-    train_interval_episodes: int = 1  # It (train every It episodes)
-    min_buffer_episodes: int = 5
-    train_batches_per_interval: int = 50
-
-    temperature: float = 1.0
+    env_name: str
+    seed: int
+    num_episodes: int
+    max_steps_per_episode: int
+    train_interval_episodes: int
+    min_buffer_episodes: int
+    train_batches_per_interval: int
+    temperature: float
+    
+    @classmethod
+    def from_dict(cls, config: Dict[str, Any]) -> 'RunConfig':
+        """Create RunConfig from configuration dictionary."""
+        return cls(
+            env_name=config['environment']['name'],
+            seed=config['environment']['seed'],
+            num_episodes=config['training']['num_episodes'],
+            max_steps_per_episode=config['environment']['max_steps_per_episode'],
+            train_interval_episodes=config['training']['train_interval_episodes'],
+            min_buffer_episodes=config['training']['min_buffer_episodes'],
+            train_batches_per_interval=config['training']['train_batches_per_interval'],
+            temperature=config['action_selection']['temperature'],
+        )
 
 
 def set_seed(seed: int) -> None:
@@ -101,22 +134,59 @@ def play_episode(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--env", type=str, default="breakout")
-    parser.add_argument("--episodes", type=int, default=200)
+    parser = argparse.ArgumentParser(description='Train MuZero on MinAtar environments')
+    parser.add_argument("--config", type=str, default="configs/muzero_default.yaml",
+                        help="Path to config file")
+    parser.add_argument("--env", type=str, default=None,
+                        help="Environment name (overrides config)")
+    parser.add_argument("--episodes", type=int, default=None,
+                        help="Number of episodes (overrides config)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Random seed (overrides config)")
     args = parser.parse_args()
 
-    cfg = RunConfig(env_name=args.env, num_episodes=args.episodes)
+    # Load configuration from YAML
+    config_dict = load_config(args.config)
+    
+    # Override with command-line arguments if provided
+    if args.env is not None:
+        config_dict['environment']['name'] = args.env
+    if args.episodes is not None:
+        config_dict['training']['num_episodes'] = args.episodes
+    if args.seed is not None:
+        config_dict['environment']['seed'] = args.seed
+    
+    # Create run configuration
+    cfg = RunConfig.from_dict(config_dict)
     set_seed(cfg.seed)
 
+    # Initialize environment
     env = MinatarEnv(cfg.env_name, seed=cfg.seed)
     num_actions = env.num_actions()
     H, W, C = env.obs_shape
 
-    train_cfg = TrainConfig(history_len=8, unroll_steps=5, td_steps=10, batch_size=32)
+    # Create training configuration from YAML
+    train_cfg = TrainConfig(
+        history_len=config_dict['training']['history_len'],
+        unroll_steps=config_dict['training']['unroll_steps'],
+        td_steps=config_dict['training']['td_steps'],
+        discount=config_dict['training']['discount'],
+        batch_size=config_dict['training']['batch_size'],
+        lr=config_dict['training']['learning_rate'],
+        weight_decay=config_dict['training']['weight_decay'],
+        grad_clip=config_dict['training']['grad_clip'],
+        policy_loss_weight=config_dict['training']['policy_loss_weight'],
+        value_loss_weight=config_dict['training']['value_loss_weight'],
+        reward_loss_weight=config_dict['training']['reward_loss_weight'],
+    )
     
     # Initialize network
-    net = MuZeroNet(obs_channels=C * train_cfg.history_len, num_actions=num_actions, hidden_dim=128)
+    hidden_dim = config_dict['network']['hidden_dim']
+    net = MuZeroNet(
+        obs_channels=C * train_cfg.history_len, 
+        num_actions=num_actions, 
+        hidden_dim=hidden_dim
+    )
     
     rng = jax.random.PRNGKey(cfg.seed)
     dummy_obs = jnp.zeros((1, C * train_cfg.history_len, H, W), dtype=jnp.float32)
@@ -153,11 +223,35 @@ def main() -> None:
     
     bound_network = BoundNetwork(net, params)
 
-    mcts_cfg = MCTSconfig(num_simulations=50, max_depth=5, discount=train_cfg.discount)
+    # Create MCTS configuration from YAML
+    mcts_cfg = MCTSconfig(
+        num_simulations=config_dict['mcts']['num_simulations'],
+        max_depth=config_dict['mcts']['max_depth'],
+        discount=train_cfg.discount,
+        pb_c_base=config_dict['mcts']['pb_c_base'],
+        pb_c_init=config_dict['mcts']['pb_c_init'],
+        dirichlet_alpha=config_dict['mcts']['dirichlet_alpha'],
+        root_exploration_frac=config_dict['mcts']['root_exploration_frac'],
+    )
     mcts = MuZeroMCTS(mcts_cfg, num_actions=num_actions, network=bound_network)
 
-    buffer = EpisodeBuffer(capacity=200)
+    # Create buffer from YAML config
+    buffer = EpisodeBuffer(capacity=config_dict['buffer']['capacity'])
     trainer = MuZeroTrainer(net, params, num_actions=num_actions, obs_shape_hwc=(H, W, C), cfg=train_cfg)
+
+    # Print configuration summary
+    if config_dict.get('logging', {}).get('verbose', True):
+        print(f"\n{'='*60}")
+        print(f"MuZero Training Configuration")
+        print(f"{'='*60}")
+        print(f"Environment: {cfg.env_name}")
+        print(f"Seed: {cfg.seed}")
+        print(f"Episodes: {cfg.num_episodes}")
+        print(f"Network hidden dim: {hidden_dim}")
+        print(f"MCTS simulations: {mcts_cfg.num_simulations}")
+        print(f"Batch size: {train_cfg.batch_size}")
+        print(f"Learning rate: {train_cfg.lr}")
+        print(f"{'='*60}\n")
 
     for ep_i in range(cfg.num_episodes):
         episode = play_episode(

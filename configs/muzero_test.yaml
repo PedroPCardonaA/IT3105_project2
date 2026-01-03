@@ -1,0 +1,56 @@
+# MuZero Quick Test Configuration
+# Minimal configuration for testing
+
+# Environment settings
+environment:
+  name: breakout
+  seed: 42
+  max_steps_per_episode: 10  # Reduced for quick testing
+
+# Network architecture
+network:
+  hidden_dim: 64  # Smaller for faster testing
+
+# Training hyperparameters
+training:
+  num_episodes: 2  # Just 2 episodes for testing
+  history_len: 4  # Reduced from 8
+  unroll_steps: 2  # Reduced from 5
+  td_steps: 3  # Reduced from 10
+  discount: 0.99
+  batch_size: 2  # Smaller batch
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  grad_clip: 5.0
+  
+  # Loss weights
+  policy_loss_weight: 1.0
+  value_loss_weight: 1.0
+  reward_loss_weight: 1.0
+  
+  # Training schedule
+  train_interval_episodes: 1
+  min_buffer_episodes: 1  # Train after just 1 episode
+  train_batches_per_interval: 2  # Just 2 batches
+
+# MCTS settings
+mcts:
+  num_simulations: 5  # Reduced from 50
+  max_depth: 2  # Reduced from 5
+  pb_c_base: 19652
+  pb_c_init: 1.25
+  dirichlet_alpha: 0.25
+  root_exploration_frac: 0.25
+
+# Replay buffer
+buffer:
+  capacity: 10
+
+# Action selection
+action_selection:
+  temperature: 1.0
+
+# Logging
+logging:
+  print_every: 1
+  verbose: true

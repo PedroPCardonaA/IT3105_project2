@@ -1,0 +1,57 @@
+# MuZero Training Configuration
+# Default configuration for MuZero training with MCTS
+
+# Environment settings
+environment:
+  name: breakout  # Options: breakout, asterix, freeway, seaquest, space_invaders
+  seed: 42
+  max_steps_per_episode: 500
+
+# Network architecture
+network:
+  hidden_dim: 128  # Hidden state dimension
+  obs_channels_multiplier: 1  # Will be multiplied by (C * history_len)
+
+# Training hyperparameters
+training:
+  num_episodes: 200
+  history_len: 8  # Number of frames to stack (q+1 look-back window)
+  unroll_steps: 5  # Number of steps to unroll (w roll-ahead actions)
+  td_steps: 10  # TD-lambda steps for value target
+  discount: 0.997  # Gamma discount factor
+  batch_size: 32
+  learning_rate: 0.001  # 1e-3
+  weight_decay: 0.00001  # 1e-5
+  grad_clip: 5.0  # Gradient clipping norm
+  
+  # Loss weights
+  policy_loss_weight: 1.0
+  value_loss_weight: 1.0
+  reward_loss_weight: 1.0
+  
+  # Training schedule
+  train_interval_episodes: 1  # Train every N episodes
+  min_buffer_episodes: 5  # Minimum episodes in buffer before training
+  train_batches_per_interval: 50  # Number of batches to train per interval
+
+# MCTS settings
+mcts:
+  num_simulations: 50  # Number of MCTS simulations per move
+  max_depth: 5  # Maximum search depth
+  pb_c_base: 19652  # UCB constant base
+  pb_c_init: 1.25  # UCB constant init
+  dirichlet_alpha: 0.25  # Dirichlet noise alpha
+  root_exploration_frac: 0.25  # Fraction of root prior from Dirichlet noise
+
+# Replay buffer
+buffer:
+  capacity: 200  # Maximum number of episodes to store
+
+# Action selection
+action_selection:
+  temperature: 1.0  # Temperature for action sampling (lower = more greedy)
+
+# Logging
+logging:
+  print_every: 1  # Print stats every N episodes
+  verbose: true
