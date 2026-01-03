@@ -1,0 +1,43 @@
+from __future__ import annotations
+from jax import numpy as jnp
+
+def stack_obs(steps, index, history_length: int) -> jnp.ndarray:
+    
+    obs0 = steps[index].obs
+    H, W, C = obs0.shape
+    
+    # Collect observations for each history step
+    obs_list = []
+    for h in range(history_length):
+        t = index - (history_length - 1 - h)
+        if t < 0:
+            # Use zeros for time steps before the start
+            obs_list.append(jnp.zeros((H, W, C), dtype=obs0.dtype))
+        else:
+            obs_list.append(steps[t].obs)
+    
+    # Stack along channel dimension: (H, W, C*history_length)
+    stacked = jnp.concatenate(obs_list, axis=-1)
+    
+    # Reshape to (history_length, C, H, W)
+    stacked = stacked.reshape(H, W, history_length, C)
+    stacked = jnp.transpose(stacked, (2, 3, 0, 1))  # (history_length, C, H, W)
+    
+    return jnp.clip(stacked, 0.0, 1.0)
+
+def value_target(steps, index: int, discount: float, td_steps: int) -> float:
+    value = 0.0
+    discount_factor = 1.0
+    for t in range(td_steps):
+        td_index = index + t
+        if td_index >= len(steps):
+            break
+        reward = steps[td_index].reward
+        value += discount_factor * reward
+        discount_factor *= discount
+        if steps[td_index].done:
+            return value
+    td_index = index + td_steps
+    if td_index < len(steps):
+        value += discount_factor * steps[td_index].root_value
+    return value
