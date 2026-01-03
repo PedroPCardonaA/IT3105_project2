@@ -26,7 +26,7 @@ def find_latest_checkpoint(checkpoint_dir: str = 'checkpoints'):
     if not checkpoint_path.exists():
         return None
     
-    checkpoints = sorted(checkpoint_path.glob('dqn_*.pkl'), key=lambda p: p.stat().st_mtime, reverse=True)
+    checkpoints = sorted(checkpoint_path.glob('best_avg_reward_**.pkl'), key=lambda p: p.stat().st_mtime, reverse=True)
     
     if not checkpoints:
         return None

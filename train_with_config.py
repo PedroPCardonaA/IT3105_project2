@@ -1,6 +1,7 @@
 """
 Train DQN with YAML Configuration
 Load hyperparameters from YAML file for easy experimentation
+Supports resuming training from checkpoints and saving best models
 """
 
 import sys
@@ -34,6 +35,24 @@ def main():
         action='store_true',
         help='List all available configurations'
     )
+    parser.add_argument(
+        '--resume',
+        type=str,
+        default=None,
+        help='Path to checkpoint file to resume training from'
+    )
+    parser.add_argument(
+        '--save-best',
+        action='store_true',
+        help='Save the best model based on average reward (default: False)'
+    )
+    parser.add_argument(
+        '--best-metric',
+        type=str,
+        choices=['avg_reward', 'total_reward', 'max_reward'],
+        default='avg_reward',
+        help='Metric to use for determining best model (default: avg_reward)'
+    )
     
     args = parser.parse_args()
     
@@ -60,15 +79,33 @@ def main():
     print("\nInitializing DQN Trainer...")
     trainer = DQNTrainer(**trainer_params)
     
+    # Resume from checkpoint if specified
+    if args.resume:
+        print(f"\nResuming from checkpoint: {args.resume}")
+        trainer.load(args.resume)
+        print(f"Resumed from episode {trainer.episode_count}, step {trainer.total_steps}")
+        print(f"Current epsilon: {trainer.get_epsilon():.4f}")
+        print(f"Buffer size: {len(trainer.replay_buffer)}")
+    
     # Train
     print("\nStarting training...\n")
     num_episodes = config['training']['num_episodes']
     eval_freq = config['logging']['eval_freq']
     
+    # Set up best model tracking
+    save_best = args.save_best or config['logging'].get('save_best_model', False)
+    best_metric = args.best_metric if args.save_best else config['logging'].get('best_metric', 'avg_reward')
+    
+    if save_best:
+        print(f"Best model tracking enabled (metric: {best_metric})")
+    
     metrics = trainer.train(
         num_episodes=num_episodes,
         eval_freq=eval_freq,
-        verbose=True
+        verbose=True,
+        save_best=save_best,
+        best_metric=best_metric,
+        checkpoint_dir=config['logging']['checkpoint_dir']
     )
     
     # Evaluate
@@ -88,13 +125,14 @@ def main():
     rewards = [eval_results['mean_reward']] * eval_episodes  # Placeholder
     print(f"    Episodes with reward > 0:  {sum(1 for _ in range(eval_episodes) if eval_results['mean_reward'] > 0)}")
     
-    # Save checkpoint
+    # Save final checkpoint
     if config['logging']['save_checkpoints']:
         print("\n" + "=" * 70)
-        print("SAVING CHECKPOINT")
+        print("SAVING FINAL CHECKPOINT")
         print("=" * 70)
         checkpoint_dir = config['logging']['checkpoint_dir']
-        trainer.save(save_dir=checkpoint_dir)
+        model_path, metrics_path = trainer.save(save_dir=checkpoint_dir, prefix='final')
+        print(f"Final checkpoint can be resumed with: --resume {model_path}")
     
     # Plot results
     if config['logging']['plot_results']:

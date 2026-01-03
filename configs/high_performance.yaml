@@ -31,3 +31,6 @@ logging:
   checkpoint_dir: checkpoints
   plot_results: true
   plot_path: high_perf_training_progress.png
+  save_best_model: true  # Save best model during training
+  best_metric: avg_reward  # Metric for best model: avg_reward, total_reward, max_reward
+

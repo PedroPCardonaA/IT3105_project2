@@ -41,10 +41,27 @@ def find_matching_config(checkpoint_path: str):
         Environment name from checkpoint filename, or None
     """
     # Extract env name from checkpoint filename
-    # Format: dqn_{env_name}_{timestamp}.pkl
+    # Formats: 
+    #   dqn_{env_name}_{timestamp}.pkl
+    #   best_{metric}_{env_name}_{timestamp}.pkl
+    #   final_{env_name}_{timestamp}.pkl
     filename = Path(checkpoint_path).stem
     parts = filename.split('_')
     
+    # Known MinAtar environments
+    minatar_envs = ['breakout', 'asterix', 'freeway', 'seaquest', 'space']
+    
+    # Search for known environment name in parts
+    for part in parts:
+        if part in minatar_envs:
+            # Handle 'space_invaders' as special case
+            if part == 'space':
+                idx = parts.index(part)
+                if idx + 1 < len(parts) and parts[idx + 1] == 'invaders':
+                    return 'space_invaders'
+            return part
+    
+    # Fallback: try old format (second part)
     if len(parts) >= 2:
         return parts[1]  # env_name
     
@@ -54,7 +71,7 @@ def find_matching_config(checkpoint_path: str):
 def evaluate_model(
     checkpoint_path: str,
     num_episodes: int = 100,
-    env_name: str = None,
+    env_name: str | None = None,
     network_type: str = 'dueling',
     verbose: bool = True,
     seed: int = 42

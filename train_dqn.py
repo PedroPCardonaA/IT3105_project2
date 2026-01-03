@@ -103,6 +103,12 @@ class DQNTrainer:
         # Training state
         self.total_steps = 0
         self.episode_count = 0
+        
+        # Best model tracking
+        self.best_avg_reward = float('-inf')
+        self.best_total_reward = float('-inf')
+        self.best_max_reward = float('-inf')
+        self.best_params = None
     
     def get_epsilon(self):
         """Get current epsilon value based on decay schedule."""
@@ -214,13 +220,18 @@ class DQNTrainer:
         
         return episode_reward, episode_length, avg_loss, epsilon
     
-    def train(self, num_episodes: int, eval_freq: int = 100, verbose: bool = True):
+    def train(self, num_episodes: int, eval_freq: int = 100, verbose: bool = True, 
+              save_best: bool = False, best_metric: str = 'avg_reward', 
+              checkpoint_dir: str = 'checkpoints'):
         """Train the DQN agent.
         
         Args:
             num_episodes: Number of episodes to train
             eval_freq: Frequency of evaluation and logging
             verbose: Whether to print progress
+            save_best: Whether to save the best model during training
+            best_metric: Metric to use for best model ('avg_reward', 'total_reward', 'max_reward')
+            checkpoint_dir: Directory to save best model checkpoints
         
         Returns:
             Dictionary of training metrics
@@ -244,11 +255,50 @@ class DQNTrainer:
             self.metrics['loss'].append(loss)
             self.metrics['epsilon'].append(epsilon)
             
-            # Print progress
+            # Print progress and check for best model
             if verbose and (episode + 1) % eval_freq == 0:
                 recent_rewards = self.episode_rewards[-eval_freq:]
                 avg_reward = np.mean(recent_rewards)
                 max_reward = np.max(recent_rewards)
+                total_reward = np.sum(recent_rewards)
+                
+                recent_losses = [l for l in self.metrics['loss'][-eval_freq:] if l > 0]
+                avg_loss = np.mean(recent_losses) if recent_losses else 0.0
+                
+                print(f"Episode {self.episode_count:5d} | "
+                      f"Steps: {self.total_steps:7d} | "
+                      f"Avg Reward: {avg_reward:6.2f} | "
+                      f"Max Reward: {max_reward:3.0f} | "
+                      f"Avg Loss: {avg_loss:6.4f} | "
+                      f"Epsilon: {epsilon:.3f} | "
+                      f"Buffer: {len(self.replay_buffer):6d}")
+                
+                # Save best model if enabled
+                if save_best:
+                    is_best = False
+                    metric_value = 0.0  # Initialize to avoid unbound warning
+                    
+                    if best_metric == 'avg_reward' and avg_reward > self.best_avg_reward:
+                        self.best_avg_reward = avg_reward
+                        is_best = True
+                        metric_value = avg_reward
+                    elif best_metric == 'total_reward' and total_reward > self.best_total_reward:
+                        self.best_total_reward = total_reward
+                        is_best = True
+                        metric_value = total_reward
+                    elif best_metric == 'max_reward' and max_reward > self.best_max_reward:
+                        self.best_max_reward = max_reward
+                        is_best = True
+                        metric_value = max_reward
+                    
+                    if is_best:
+                        self.best_params = self.online_agent.params
+                        model_path, _ = self.save(
+                            save_dir=checkpoint_dir, 
+                            prefix=f'best_{best_metric}',
+                            save_metrics=False
+                        )
+                        print(f"  → New best model saved! {best_metric}={metric_value:.2f} at {model_path}")
                 
                 recent_losses = [l for l in self.metrics['loss'][-eval_freq:] if l > 0]
                 avg_loss = np.mean(recent_losses) if recent_losses else 0.0
@@ -312,41 +362,92 @@ class DQNTrainer:
         
         return results
     
-    def save(self, save_dir: str = 'checkpoints'):
+    def save(self, save_dir: str = 'checkpoints', prefix: str = 'dqn', save_metrics: bool = True):
         """Save the trained model and metrics.
         
         Args:
             save_dir: Directory to save checkpoint
+            prefix: Prefix for the checkpoint filename
+            save_metrics: Whether to save metrics (default: True)
+        
+        Returns:
+            Tuple of (model_path, metrics_path)
         """
         save_path = Path(save_dir)
         save_path.mkdir(exist_ok=True, parents=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Save model parameters
-        model_path = save_path / f"dqn_{self.env_name}_{timestamp}.pkl"
+        # Save model parameters and full state
+        model_path = save_path / f"{prefix}_{self.env_name}_{timestamp}.pkl"
         with open(model_path, 'wb') as f:
             pickle.dump({
                 'params': self.online_agent.params,
+                'target_params': self.target_params,
                 'opt_state': self.online_agent.opt_state,
                 'total_steps': self.total_steps,
-                'episode_count': self.episode_count
+                'episode_count': self.episode_count,
+                'episode_rewards': self.episode_rewards,
+                'episode_lengths': self.episode_lengths,
+                'best_avg_reward': self.best_avg_reward,
+                'best_total_reward': self.best_total_reward,
+                'best_max_reward': self.best_max_reward,
+                'replay_buffer': self.replay_buffer,
             }, f)
         
-        # Save metrics
-        metrics_path = save_path / f"metrics_{self.env_name}_{timestamp}.json"
-        with open(metrics_path, 'w') as f:
-            # Convert to serializable format
-            metrics_dict = {k: [float(v) for v in vals] for k, vals in self.metrics.items()}
-            json.dump(metrics_dict, f, indent=2)
-        
         print(f"Model saved to: {model_path}")
-        print(f"Metrics saved to: {metrics_path}")
+        
+        # Save metrics
+        metrics_path = None
+        if save_metrics:
+            metrics_path = save_path / f"metrics_{self.env_name}_{timestamp}.json"
+            with open(metrics_path, 'w') as f:
+                # Convert to serializable format
+                metrics_dict = {k: [float(v) for v in vals] for k, vals in self.metrics.items()}
+                json.dump(metrics_dict, f, indent=2)
+            print(f"Metrics saved to: {metrics_path}")
         
         return model_path, metrics_path
+    
+    def load(self, checkpoint_path: str):
+        """Load a saved checkpoint to resume training.
+        
+        Args:
+            checkpoint_path: Path to the checkpoint file
+        """
+        checkpoint_file = Path(checkpoint_path)
+        
+        if not checkpoint_file.exists():
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+        
+        with open(checkpoint_file, 'rb') as f:
+            checkpoint = pickle.load(f)
+        
+        # Restore model parameters and state
+        self.online_agent.params = checkpoint['params']
+        self.target_params = checkpoint.get('target_params', checkpoint['params'])
+        self.online_agent.opt_state = checkpoint['opt_state']
+        self.total_steps = checkpoint['total_steps']
+        self.episode_count = checkpoint['episode_count']
+        
+        # Restore episode history if available
+        if 'episode_rewards' in checkpoint:
+            self.episode_rewards = checkpoint['episode_rewards']
+            self.episode_lengths = checkpoint['episode_lengths']
+        
+        # Restore best model tracking
+        self.best_avg_reward = checkpoint.get('best_avg_reward', float('-inf'))
+        self.best_total_reward = checkpoint.get('best_total_reward', float('-inf'))
+        self.best_max_reward = checkpoint.get('best_max_reward', float('-inf'))
+        
+        # Restore replay buffer if available
+        if 'replay_buffer' in checkpoint:
+            self.replay_buffer = checkpoint['replay_buffer']
+        
+        print(f"Checkpoint loaded from: {checkpoint_path}")
 
 
-def plot_training_progress(metrics: dict, save_path: str = None):
+def plot_training_progress(metrics: dict, save_path: str | None = None):
     """Plot training progress with multiple subplots.
     
     Args:
