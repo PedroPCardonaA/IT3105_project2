@@ -1,10 +1,12 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 import jax
 import jax.numpy as jnp
 from flax.training import train_state
 import optax
+import matplotlib.pyplot as plt
+from collections import defaultdict
 
 from network import MuZeroNet
 from buffer import EpisodeBuffer, Episode
@@ -61,6 +63,10 @@ class MuZeroTrainer:
             params=params,
             tx=optimizer
         )
+        
+        # Initialize metrics tracking for visualization
+        self.training_step = 0
+        self.metrics_history = defaultdict(list)
 
     def sample_batch(self, buffer: EpisodeBuffer):
         """Sample batch from buffer matching PyTorch implementation."""
@@ -185,7 +191,14 @@ class MuZeroTrainer:
         self.state = self.state.apply_gradients(grads=grads)
 
         # Convert metrics to Python floats
-        return {k: float(v) for k, v in metrics.items()}
+        metrics_float = {k: float(v) for k, v in metrics.items()}
+        
+        # Record metrics for visualization
+        self.training_step += 1
+        for k, v in metrics_float.items():
+            self.metrics_history[k].append(v)
+        
+        return metrics_float
 
     def _policy_loss(self, logits: jnp.ndarray, target_pi: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
         """Compute cross-entropy loss for policy."""
@@ -197,4 +210,178 @@ class MuZeroTrainer:
         """Compute masked mean squared error."""
         mse = (pred - target) ** 2
         return (mse * mask).sum() / (mask.sum() + 1e-8)
+    
+    def plot_training_progress(self, save_path: str = None, show: bool = True, window_size: int = 100):
+        """Plot training metrics over time.
+        
+        Args:
+            save_path: Path to save the plot. If None, plot is not saved.
+            show: Whether to display the plot.
+            window_size: Window size for computing moving average (smoothing).
+        """
+        if not self.metrics_history:
+            print("No training metrics to plot yet.")
+            return
+        
+        # Create subplots for different metrics
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        fig.suptitle('MuZero Training Progress', fontsize=16, fontweight='bold')
+        
+        steps = list(range(1, self.training_step + 1))
+        
+        # Plot total loss
+        if 'loss' in self.metrics_history:
+            ax = axes[0, 0]
+            loss_values = self.metrics_history['loss']
+            ax.plot(steps, loss_values, alpha=0.3, color='blue', label='Raw')
+            if len(loss_values) >= window_size:
+                smoothed = self._moving_average(loss_values, window_size)
+                ax.plot(steps[window_size-1:], smoothed, color='blue', linewidth=2, label=f'MA({window_size})')
+            ax.set_xlabel('Training Step')
+            ax.set_ylabel('Total Loss')
+            ax.set_title('Total Loss')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+        
+        # Plot policy loss
+        if 'policy_loss' in self.metrics_history:
+            ax = axes[0, 1]
+            policy_values = self.metrics_history['policy_loss']
+            ax.plot(steps, policy_values, alpha=0.3, color='green', label='Raw')
+            if len(policy_values) >= window_size:
+                smoothed = self._moving_average(policy_values, window_size)
+                ax.plot(steps[window_size-1:], smoothed, color='green', linewidth=2, label=f'MA({window_size})')
+            ax.set_xlabel('Training Step')
+            ax.set_ylabel('Policy Loss')
+            ax.set_title('Policy Loss (Cross-Entropy)')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+        
+        # Plot value loss
+        if 'value_loss' in self.metrics_history:
+            ax = axes[1, 0]
+            value_values = self.metrics_history['value_loss']
+            ax.plot(steps, value_values, alpha=0.3, color='red', label='Raw')
+            if len(value_values) >= window_size:
+                smoothed = self._moving_average(value_values, window_size)
+                ax.plot(steps[window_size-1:], smoothed, color='red', linewidth=2, label=f'MA({window_size})')
+            ax.set_xlabel('Training Step')
+            ax.set_ylabel('Value Loss')
+            ax.set_title('Value Loss (MSE)')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+        
+        # Plot reward loss
+        if 'reward_loss' in self.metrics_history:
+            ax = axes[1, 1]
+            reward_values = self.metrics_history['reward_loss']
+            ax.plot(steps, reward_values, alpha=0.3, color='orange', label='Raw')
+            if len(reward_values) >= window_size:
+                smoothed = self._moving_average(reward_values, window_size)
+                ax.plot(steps[window_size-1:], smoothed, color='orange', linewidth=2, label=f'MA({window_size})')
+            ax.set_xlabel('Training Step')
+            ax.set_ylabel('Reward Loss')
+            ax.set_title('Reward Loss (MSE)')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Training progress plot saved to: {save_path}")
+        
+        if show:
+            plt.show()
+        else:
+            plt.close()
+    
+    def plot_loss_comparison(self, save_path: str = None, show: bool = True):
+        """Plot all loss components on the same graph for comparison.
+        
+        Args:
+            save_path: Path to save the plot. If None, plot is not saved.
+            show: Whether to display the plot.
+        """
+        if not self.metrics_history:
+            print("No training metrics to plot yet.")
+            return
+        
+        plt.figure(figsize=(12, 6))
+        steps = list(range(1, self.training_step + 1))
+        
+        colors = {'policy_loss': 'green', 'value_loss': 'red', 'reward_loss': 'orange'}
+        
+        for metric_name in ['policy_loss', 'value_loss', 'reward_loss']:
+            if metric_name in self.metrics_history:
+                values = self.metrics_history[metric_name]
+                label = metric_name.replace('_', ' ').title()
+                plt.plot(steps, values, alpha=0.6, color=colors[metric_name], label=label)
+        
+        plt.xlabel('Training Step', fontsize=12)
+        plt.ylabel('Loss Value', fontsize=12)
+        plt.title('MuZero Loss Components Comparison', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Loss comparison plot saved to: {save_path}")
+        
+        if show:
+            plt.show()
+        else:
+            plt.close()
+    
+    def _moving_average(self, values: List[float], window_size: int) -> List[float]:
+        """Compute moving average for smoothing plots.
+        
+        Args:
+            values: List of values to smooth.
+            window_size: Size of the moving window.
+            
+        Returns:
+            List of smoothed values.
+        """
+        smoothed = []
+        for i in range(window_size - 1, len(values)):
+            window = values[i - window_size + 1:i + 1]
+            smoothed.append(sum(window) / window_size)
+        return smoothed
+    
+    def get_current_metrics(self) -> Dict[str, float]:
+        """Get the most recent metrics.
+        
+        Returns:
+            Dictionary with the latest metric values.
+        """
+        if not self.metrics_history:
+            return {}
+        return {k: v[-1] for k, v in self.metrics_history.items()}
+    
+    def print_training_summary(self):
+        """Print a summary of training progress."""
+        if not self.metrics_history:
+            print("No training has been performed yet.")
+            return
+        
+        print("\n" + "="*60)
+        print(f"MuZero Training Summary (Step {self.training_step})")
+        print("="*60)
+        
+        for metric_name, values in self.metrics_history.items():
+            if values:
+                latest = values[-1]
+                min_val = min(values)
+                max_val = max(values)
+                avg_val = sum(values) / len(values)
+                
+                print(f"\n{metric_name.replace('_', ' ').title()}:")
+                print(f"  Current: {latest:.6f}")
+                print(f"  Min:     {min_val:.6f}")
+                print(f"  Max:     {max_val:.6f}")
+                print(f"  Average: {avg_val:.6f}")
+        
+        print("\n" + "="*60 + "\n")
 
