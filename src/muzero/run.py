@@ -9,6 +9,10 @@ import jax
 import jax.numpy as jnp
 import yaml
 from pathlib import Path
+import pickle
+import json
+from datetime import datetime
+import os
 
 from minatar_env import MinatarEnv
 from network import MuZeroNet
@@ -47,6 +51,8 @@ class RunConfig:
     min_buffer_episodes: int
     train_batches_per_interval: int
     temperature: float
+    save_interval_episodes: int
+    results_dir: str
     
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> 'RunConfig':
@@ -60,12 +66,139 @@ class RunConfig:
             min_buffer_episodes=config['training']['min_buffer_episodes'],
             train_batches_per_interval=config['training']['train_batches_per_interval'],
             temperature=config['action_selection']['temperature'],
+            save_interval_episodes=config.get('checkpointing', {}).get('save_interval_episodes', 100),
+            results_dir=config.get('checkpointing', {}).get('results_dir', 'muzero_results'),
         )
 
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
+
+
+def create_run_folder(base_dir: str = "muzero_results") -> tuple[str, str]:
+    """Create a new run folder with unique ID.
+    
+    Args:
+        base_dir: Base directory for all results.
+        
+    Returns:
+        Tuple of (run_folder_path, run_id)
+    """
+    Path(base_dir).mkdir(exist_ok=True)
+    
+    # Find existing run folders
+    existing_runs = [d for d in os.listdir(base_dir) if d.startswith("run_")]
+    if existing_runs:
+        run_numbers = [int(r.split('_')[1]) for r in existing_runs if r.split('_')[1].isdigit()]
+        next_run = max(run_numbers) + 1 if run_numbers else 1
+    else:
+        next_run = 1
+    
+    run_id = f"run_{next_run:03d}"
+    run_folder = os.path.join(base_dir, run_id)
+    Path(run_folder).mkdir(exist_ok=True)
+    
+    return run_folder, run_id
+
+
+def save_model_checkpoint(
+    params,
+    trainer: MuZeroTrainer,
+    run_folder: str,
+    checkpoint_num: int,
+    config_dict: Dict[str, Any],
+    episode_num: int,
+    ep_return: float,
+) -> str:
+    """Save model checkpoint with visualization.
+    
+    Args:
+        params: Model parameters to save.
+        trainer: Trainer instance for visualization.
+        run_folder: Path to run folder.
+        checkpoint_num: Checkpoint number.
+        config_dict: Configuration dictionary.
+        episode_num: Current episode number.
+        ep_return: Current episode return.
+        
+    Returns:
+        Path to checkpoint folder.
+    """
+    checkpoint_id = f"checkpoint_{checkpoint_num:03d}"
+    checkpoint_folder = os.path.join(run_folder, checkpoint_id)
+    Path(checkpoint_folder).mkdir(exist_ok=True)
+    
+    # Save model parameters
+    model_path = os.path.join(checkpoint_folder, "model_params.pkl")
+    with open(model_path, 'wb') as f:
+        pickle.dump(params, f)
+    
+    # Save training metadata
+    metadata = {
+        "checkpoint_num": checkpoint_num,
+        "episode_num": episode_num,
+        "episode_return": ep_return,
+        "training_step": trainer.training_step,
+        "timestamp": datetime.now().isoformat(),
+        "current_metrics": trainer.get_current_metrics(),
+    }
+    metadata_path = os.path.join(checkpoint_folder, "metadata.json")
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    
+    # Save configuration
+    config_path = os.path.join(checkpoint_folder, "config.yaml")
+    with open(config_path, 'w') as f:
+        yaml.dump(config_dict, f, default_flow_style=False)
+    
+    # Save training visualizations
+    viz_path = os.path.join(checkpoint_folder, "training_progress.png")
+    trainer.plot_training_progress(save_path=viz_path, show=False)
+    
+    comparison_path = os.path.join(checkpoint_folder, "loss_comparison.png")
+    trainer.plot_loss_comparison(save_path=comparison_path, show=False)
+    
+    # Save metrics history
+    metrics_path = os.path.join(checkpoint_folder, "metrics_history.json")
+    metrics_dict = {k: v for k, v in trainer.metrics_history.items()}
+    with open(metrics_path, 'w') as f:
+        json.dump(metrics_dict, f, indent=2)
+    
+    print(f"\n{'='*60}")
+    print(f"Checkpoint saved: {checkpoint_id}")
+    print(f"Location: {checkpoint_folder}")
+    print(f"Episode: {episode_num} | Return: {ep_return:.2f}")
+    print(f"{'='*60}\n")
+    
+    return checkpoint_folder
+
+
+def load_model_checkpoint(checkpoint_folder: str) -> tuple:
+    """Load model checkpoint.
+    
+    Args:
+        checkpoint_folder: Path to checkpoint folder.
+        
+    Returns:
+        Tuple of (params, metadata, config_dict)
+    """
+    # Load parameters
+    model_path = os.path.join(checkpoint_folder, "model_params.pkl")
+    with open(model_path, 'rb') as f:
+        params = pickle.load(f)
+    
+    # Load metadata
+    metadata_path = os.path.join(checkpoint_folder, "metadata.json")
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+    
+    # Load config
+    config_path = os.path.join(checkpoint_folder, "config.yaml")
+    with open(config_path, 'r') as f:
+        config_dict = yaml.safe_load(f)
+    
+    return params, metadata, config_dict
 
 
 def stack_frames(frames: Deque[np.ndarray], history_len: int) -> jnp.ndarray:
@@ -239,11 +372,22 @@ def main() -> None:
     buffer = EpisodeBuffer(capacity=config_dict['buffer']['capacity'])
     trainer = MuZeroTrainer(net, params, num_actions=num_actions, obs_shape_hwc=(H, W, C), cfg=train_cfg)
 
+    # Create run folder for saving checkpoints
+    run_folder, run_id = create_run_folder(cfg.results_dir)
+    checkpoint_counter = 0
+    
+    # Save initial configuration to run folder
+    initial_config_path = os.path.join(run_folder, "run_config.yaml")
+    with open(initial_config_path, 'w') as f:
+        yaml.dump(config_dict, f, default_flow_style=False)
+
     # Print configuration summary
     if config_dict.get('logging', {}).get('verbose', True):
         print(f"\n{'='*60}")
         print(f"MuZero Training Configuration")
         print(f"{'='*60}")
+        print(f"Run ID: {run_id}")
+        print(f"Results folder: {run_folder}")
         print(f"Environment: {cfg.env_name}")
         print(f"Seed: {cfg.seed}")
         print(f"Episodes: {cfg.num_episodes}")
@@ -251,6 +395,7 @@ def main() -> None:
         print(f"MCTS simulations: {mcts_cfg.num_simulations}")
         print(f"Batch size: {train_cfg.batch_size}")
         print(f"Learning rate: {train_cfg.lr}")
+        print(f"Save interval: {cfg.save_interval_episodes} episodes")
         print(f"{'='*60}\n")
 
     for ep_i in range(cfg.num_episodes):
@@ -284,6 +429,38 @@ def main() -> None:
                 f"value={stats['value_loss']:.4f}",
                 f"reward={stats['reward_loss']:.4f}",
             )
+        
+        # Save checkpoint periodically
+        if (ep_i + 1) % cfg.save_interval_episodes == 0:
+            checkpoint_counter += 1
+            save_model_checkpoint(
+                params=trainer.state.params,
+                trainer=trainer,
+                run_folder=run_folder,
+                checkpoint_num=checkpoint_counter,
+                config_dict=config_dict,
+                episode_num=ep_i + 1,
+                ep_return=ep_return,
+            )
+            # Print training summary
+            trainer.print_training_summary()
+    
+    # Save final checkpoint
+    print("\nTraining complete! Saving final checkpoint...")
+    checkpoint_counter += 1
+    save_model_checkpoint(
+        params=trainer.state.params,
+        trainer=trainer,
+        run_folder=run_folder,
+        checkpoint_num=checkpoint_counter,
+        config_dict=config_dict,
+        episode_num=cfg.num_episodes,
+        ep_return=ep_return,
+    )
+    trainer.print_training_summary()
+    
+    print(f"\nAll results saved to: {run_folder}")
+    print(f"Run ID: {run_id}")
 
 
 if __name__ == "__main__":

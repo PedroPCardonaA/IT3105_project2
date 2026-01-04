@@ -51,6 +51,11 @@ buffer:
 action_selection:
   temperature: 1.0  # Temperature for action sampling (lower = more greedy)
 
+# Checkpointing and results
+checkpointing:
+  save_interval_episodes: 10  # Save model checkpoint every N episodes
+  results_dir: muzero_results  # Base directory for saving results
+
 # Logging
 logging:
   print_every: 1  # Print stats every N episodes
