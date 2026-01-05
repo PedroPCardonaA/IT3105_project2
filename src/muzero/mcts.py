@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import jax
 import jax.numpy as jnp
 import random
-from network import MuZeroNet
+from .network import MuZeroNet
 
 @dataclass(frozen=True)
 class MCTSconfig:

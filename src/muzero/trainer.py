@@ -8,9 +8,9 @@ import optax
 import matplotlib.pyplot as plt
 from collections import defaultdict
 
-from network import MuZeroNet
-from buffer import EpisodeBuffer, Episode
-from utils import stack_obs, value_target
+from .network import MuZeroNet
+from .buffer import EpisodeBuffer, Episode
+from .utils import stack_obs, value_target
 
 
 @dataclass(frozen=True)

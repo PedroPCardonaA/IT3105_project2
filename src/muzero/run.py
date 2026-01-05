@@ -14,11 +14,11 @@ import json
 from datetime import datetime
 import os
 
-from minatar_env import MinatarEnv
-from network import MuZeroNet
-from mcts import MuZeroMCTS, MCTSconfig
-from buffer import Episode, EpisodeBuffer, StepData
-from trainer import MuZeroTrainer, TrainConfig
+from .minatar_env import MinatarEnv
+from .network import MuZeroNet
+from .mcts import MuZeroMCTS, MCTSconfig
+from .buffer import Episode, EpisodeBuffer, StepData
+from .trainer import MuZeroTrainer, TrainConfig
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
