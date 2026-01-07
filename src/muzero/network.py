@@ -16,6 +16,7 @@ class RepresentationNet(nn.Module):
         # Convert from NCHW to NHWC for Flax
         x = jnp.transpose(obs, (0, 2, 3, 1))
         
+        # First conv accepts obs_channels input channels
         x = nn.Conv(
             features=32,
             kernel_size=(3, 3),
@@ -120,6 +121,16 @@ class MuZeroNet(nn.Module):
         hidden = self.repr(obs)
         policy_logits, value = self.pred(hidden)
         return hidden, policy_logits, value
+
+    # Small wrappers to make apply(method=...) calls stable and JIT-friendly.
+    def representation(self, obs: jnp.ndarray) -> jnp.ndarray:
+        return self.repr(obs)
+
+    def prediction(self, hidden: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        return self.pred(hidden)
+
+    def dynamics(self, hidden: jnp.ndarray, action: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        return self.dyn(hidden, action)
     
     def recurrent_inference(self, hidden: jnp.ndarray, action: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         next_hidden, reward = self.dyn(hidden, action)

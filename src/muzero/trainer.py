@@ -1,8 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional, cast
 import jax
 import jax.numpy as jnp
+from jax import lax
 from flax.training import train_state
 import optax
 import matplotlib.pyplot as plt
@@ -67,6 +68,91 @@ class MuZeroTrainer:
         # Initialize metrics tracking for visualization
         self.training_step = 0
         self.metrics_history = defaultdict(list)
+
+        # JIT a single training step. This is the biggest speed win.
+        self._train_step = jax.jit(self._make_train_step())
+
+    def _make_train_step(self):
+        cfg = self.cfg
+        net = self.net
+
+        def policy_loss(logits: jnp.ndarray, target_pi: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+            log_probs = jax.nn.log_softmax(logits, axis=-1)
+            ce = -(target_pi * log_probs).sum(axis=-1)
+            return (ce * mask).sum() / (mask.sum() + 1e-8)
+
+        def mse(pred: jnp.ndarray, target: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+            err = (pred - target) ** 2
+            return (err * mask).sum() / (mask.sum() + 1e-8)
+
+        def train_step(
+            state: TrainState,
+            obs: jnp.ndarray,
+            actions: jnp.ndarray,
+            pi_t: jnp.ndarray,
+            v_t: jnp.ndarray,
+            r_t: jnp.ndarray,
+            ms: jnp.ndarray,
+            mr: jnp.ndarray,
+        ):
+            def loss_fn(params):
+                hidden = net.apply(params, obs, method=MuZeroNet.representation)  # (B, hidden)
+
+                logits0, value0 = net.apply(params, hidden, method=MuZeroNet.prediction)
+                logits0 = cast(jnp.ndarray, logits0)
+                value0 = cast(jnp.ndarray, value0)
+                pol0 = policy_loss(logits0, pi_t[:, 0], ms[:, 0])
+                val0 = mse(value0, v_t[:, 0], ms[:, 0])
+
+                # Prepare sequences with time-major leading dimension for scan.
+                actions_seq = jnp.swapaxes(actions, 0, 1)              # (T, B)
+                pi_seq = jnp.swapaxes(pi_t[:, 1:], 0, 1)               # (T, B, A)
+                v_seq = jnp.swapaxes(v_t[:, 1:], 0, 1)                 # (T, B)
+                r_seq = jnp.swapaxes(r_t, 0, 1)                        # (T, B)
+                ms_seq = jnp.swapaxes(ms[:, 1:], 0, 1)                 # (T, B)
+                mr_seq = jnp.swapaxes(mr, 0, 1)                        # (T, B)
+
+                def step_fn(h, inp):
+                    a_i, pi_i, v_i, r_i, ms_i, mr_i = inp
+                    h, r_pred = net.apply(params, h, a_i, method=MuZeroNet.dynamics)
+                    h = cast(jnp.ndarray, h)
+                    r_pred = cast(jnp.ndarray, r_pred)
+                    logits, value = net.apply(params, h, method=MuZeroNet.prediction)
+                    logits = cast(jnp.ndarray, logits)
+                    value = cast(jnp.ndarray, value)
+                    pol = policy_loss(logits, pi_i, ms_i)
+                    val = mse(value, v_i, ms_i)
+                    rew = mse(r_pred, r_i, mr_i)
+                    return h, (pol, val, rew)
+
+                _, (pol_seq, val_seq, rew_seq) = lax.scan(
+                    step_fn,
+                    hidden,
+                    (actions_seq, pi_seq, v_seq, r_seq, ms_seq, mr_seq),
+                )
+
+                pol_loss = pol0 + jnp.sum(pol_seq)
+                val_loss = val0 + jnp.sum(val_seq)
+                rew_loss = jnp.sum(rew_seq)
+
+                total_loss = (
+                    cfg.policy_loss_weight * pol_loss
+                    + cfg.value_loss_weight * val_loss
+                    + cfg.reward_loss_weight * rew_loss
+                )
+
+                return total_loss, {
+                    "loss": total_loss,
+                    "policy_loss": pol_loss,
+                    "value_loss": val_loss,
+                    "reward_loss": rew_loss,
+                }
+
+            (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+            state = state.apply_gradients(grads=grads)
+            return state, metrics
+
+        return train_step
 
     def sample_batch(self, buffer: EpisodeBuffer):
         """Sample batch from buffer matching PyTorch implementation."""
@@ -144,51 +230,8 @@ class MuZeroTrainer:
         ms = jnp.stack(mask_state)  # (B, unroll_steps+1)
         mr = jnp.stack(mask_reward)  # (B, unroll_steps)
 
-        # Define loss function
-        def loss_fn(params):
-            # Initial representation
-            hidden = self.net.apply(params, obs, method=lambda net, x: net.repr(x))
-
-            pol_loss = 0.0
-            val_loss = 0.0
-            rew_loss = 0.0
-
-            # Step 0 prediction
-            logits, value = self.net.apply(params, hidden, method=lambda net, h: net.pred(h))
-            pol_loss += self._policy_loss(logits, pi_t[:, 0], ms[:, 0])
-            val_loss += self._mse(value, v_t[:, 0], ms[:, 0])
-
-            # Unroll
-            for i in range(self.cfg.unroll_steps):
-                hidden, r_pred = self.net.apply(
-                    params, hidden, actions[:, i], 
-                    method=lambda net, h, a: net.dyn(h, a)
-                )
-                rew_loss += self._mse(r_pred, r_t[:, i], mr[:, i])
-
-                logits, value = self.net.apply(params, hidden, method=lambda net, h: net.pred(h))
-                pol_loss += self._policy_loss(logits, pi_t[:, i + 1], ms[:, i + 1])
-                val_loss += self._mse(value, v_t[:, i + 1], ms[:, i + 1])
-
-            total_loss = (
-                self.cfg.policy_loss_weight * pol_loss
-                + self.cfg.value_loss_weight * val_loss
-                + self.cfg.reward_loss_weight * rew_loss
-            )
-
-            return total_loss, {
-                "loss": total_loss,
-                "policy_loss": pol_loss,
-                "value_loss": val_loss,
-                "reward_loss": rew_loss,
-            }
-
-        # Compute gradients
-        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-        (loss, metrics), grads = grad_fn(self.state.params)
-
-        # Update parameters
-        self.state = self.state.apply_gradients(grads=grads)
+        # JIT-compiled training step
+        self.state, metrics = self._train_step(self.state, obs, actions, pi_t, v_t, r_t, ms, mr)
 
         # Convert metrics to Python floats
         metrics_float = {k: float(v) for k, v in metrics.items()}
@@ -211,7 +254,7 @@ class MuZeroTrainer:
         mse = (pred - target) ** 2
         return (mse * mask).sum() / (mask.sum() + 1e-8)
     
-    def plot_training_progress(self, save_path: str = None, show: bool = True, window_size: int = 100):
+    def plot_training_progress(self, save_path: Optional[str] = None, show: bool = True, window_size: int = 100):
         """Plot training metrics over time.
         
         Args:
@@ -296,7 +339,7 @@ class MuZeroTrainer:
         else:
             plt.close()
     
-    def plot_loss_comparison(self, save_path: str = None, show: bool = True):
+    def plot_loss_comparison(self, save_path: Optional[str] = None, show: bool = True):
         """Plot all loss components on the same graph for comparison.
         
         Args:

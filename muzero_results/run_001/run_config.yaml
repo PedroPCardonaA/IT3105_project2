@@ -1,0 +1,42 @@
+action_selection:
+  min_temperature: 0.1
+  temperature: 1.0
+  temperature_decay: 0.995
+buffer:
+  capacity: 200
+checkpointing:
+  results_dir: muzero_results
+  save_interval_episodes: 10
+environment:
+  max_steps_per_episode: 624
+  name: breakout
+  seed: 42
+logging:
+  print_every: 1
+  verbose: true
+mcts:
+  dirichlet_alpha: 0.3
+  max_depth: 10
+  num_simulations: 100
+  pb_c_base: 19652
+  pb_c_init: 1.25
+  root_exploration_frac: 0.25
+network:
+  hidden_dim: 128
+  obs_channels_multiplier: 1
+training:
+  batch_size: 64
+  discount: 0.99
+  grad_clip: 10.0
+  history_len: 8
+  learning_rate: 0.0005
+  min_buffer_episodes: 10
+  num_episodes: 2500
+  policy_loss_weight: 1.0
+  reward_loss_weight: 1.0
+  td_steps: 10
+  train_batches_per_interval: 100
+  train_interval_episodes: 1
+  unroll_steps: 5
+  value_loss_weight: 1.0
+  weight_decay: 0.0001

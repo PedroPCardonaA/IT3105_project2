@@ -51,12 +51,15 @@ class RunConfig:
     min_buffer_episodes: int
     train_batches_per_interval: int
     temperature: float
+    temperature_decay: float
+    min_temperature: float
     save_interval_episodes: int
     results_dir: str
     
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> 'RunConfig':
         """Create RunConfig from configuration dictionary."""
+        action_sel = config.get('action_selection', {})
         return cls(
             env_name=config['environment']['name'],
             seed=config['environment']['seed'],
@@ -65,7 +68,9 @@ class RunConfig:
             train_interval_episodes=config['training']['train_interval_episodes'],
             min_buffer_episodes=config['training']['min_buffer_episodes'],
             train_batches_per_interval=config['training']['train_batches_per_interval'],
-            temperature=config['action_selection']['temperature'],
+            temperature=action_sel.get('temperature', 1.0),
+            temperature_decay=action_sel.get('temperature_decay', 1.0),
+            min_temperature=action_sel.get('min_temperature', 0.1),
             save_interval_episodes=config.get('checkpointing', {}).get('save_interval_episodes', 100),
             results_dir=config.get('checkpointing', {}).get('results_dir', 'muzero_results'),
         )
@@ -201,7 +206,7 @@ def load_model_checkpoint(checkpoint_folder: str) -> tuple:
     return params, metadata, config_dict
 
 
-def stack_frames(frames: Deque[np.ndarray], history_len: int) -> jnp.ndarray:
+def stack_frames(frames: Deque[Any], history_len: int) -> jnp.ndarray:
     H, W, C = frames[-1].shape
     out = np.zeros((history_len, H, W, C), dtype=np.float32)
     start = history_len - len(frames)
@@ -212,11 +217,38 @@ def stack_frames(frames: Deque[np.ndarray], history_len: int) -> jnp.ndarray:
 
 
 def sample_action(policy: np.ndarray, temperature: float) -> int:
+    p = np.asarray(policy, dtype=np.float64)
+    if p.ndim != 1 or p.size == 0:
+        raise ValueError(f"Invalid policy shape: {p.shape}")
+
+    # Greedy selection (also handles NaNs/inf by argmax semantics).
     if temperature <= 1e-6:
-        return int(np.argmax(policy))
-    p = policy ** (1.0 / temperature)
-    p = p / (p.sum() + 1e-8)
-    return int(np.random.choice(len(policy), p=p))
+        return int(np.nanargmax(p))
+
+    # MuZero MCTS returns a probability distribution; apply temperature by
+    # reweighting, but be robust to numerical issues.
+    p = np.where(np.isfinite(p), p, 0.0)
+    p = np.clip(p, 0.0, None)
+
+    # Temperature transform: p_i^(1/T). If the distribution is too peaky/flat,
+    # this can under/overflow; renormalize safely.
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore', under='ignore'):
+        p = np.power(p, 1.0 / float(temperature))
+
+    p = np.where(np.isfinite(p), p, 0.0)
+    total = float(p.sum())
+    if total <= 0.0:
+        p = np.ones_like(p) / p.size
+    else:
+        p = p / total
+
+    # Force exact sum to 1.0 to satisfy numpy's strict check.
+    p = p / float(p.sum())
+    p[-1] = 1.0 - float(p[:-1].sum())
+    p = np.clip(p, 0.0, 1.0)
+    p = p / float(p.sum())
+
+    return int(np.random.choice(p.size, p=p))
 
 
 def play_episode(
@@ -239,7 +271,7 @@ def play_episode(
         obs_t = jnp.expand_dims(stacked, axis=0)  # (1, C*hist, H, W)
 
         # Get hidden state from representation network
-        hidden = net.apply(params, obs_t, method=lambda net, x: net.repr(x))
+        hidden = net.apply(params, obs_t, method=MuZeroNet.representation)
         hidden = hidden[0]  # Remove batch dimension
 
         policy, root_value = mcts.run(hidden)
@@ -336,7 +368,7 @@ def main() -> None:
             # Add batch dimension if needed
             if hidden.ndim == 1:
                 hidden = jnp.expand_dims(hidden, axis=0)
-            logits, value = self.network.apply(self.params, hidden, method=lambda net, h: net.pred(h))
+            logits, value = self.network.apply(self.params, hidden, method=MuZeroNet.prediction)
             # Remove batch dimension
             return logits[0], value[0]
         
@@ -398,6 +430,9 @@ def main() -> None:
         print(f"Save interval: {cfg.save_interval_episodes} episodes")
         print(f"{'='*60}\n")
 
+    current_temperature = cfg.temperature
+    ep_return = 0.0
+    
     for ep_i in range(cfg.num_episodes):
         episode = play_episode(
             env=env,
@@ -406,13 +441,16 @@ def main() -> None:
             mcts=mcts,
             history_len=train_cfg.history_len,
             max_steps=cfg.max_steps_per_episode,
-            temperature=cfg.temperature,
+            temperature=current_temperature,
         )
 
         ep_return = sum(s.reward for s in episode.steps)
         buffer.add_episode(episode)
 
-        print(f"Episode {ep_i:04d} | steps={len(episode)} | return={ep_return:.2f} | buffer={len(buffer.episodes)}")
+        # Decay temperature
+        current_temperature = max(cfg.min_temperature, current_temperature * cfg.temperature_decay)
+
+        print(f"Episode {ep_i:04d} | steps={len(episode)} | return={ep_return:.2f} | buffer={len(buffer.episodes)} | temp={current_temperature:.3f}")
 
         if (ep_i + 1) % cfg.train_interval_episodes == 0 and len(buffer.episodes) >= cfg.min_buffer_episodes:
             stats = {}

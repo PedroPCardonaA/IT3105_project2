@@ -5,7 +5,7 @@
 environment:
   name: breakout  # Options: breakout, asterix, freeway, seaquest, space_invaders
   seed: 42
-  max_steps_per_episode: 500
+  max_steps_per_episode: 624
 
 # Network architecture
 network:
@@ -14,15 +14,15 @@ network:
 
 # Training hyperparameters
 training:
-  num_episodes: 200
+  num_episodes: 3000  # Longer training budget (you said you can train a lot)
   history_len: 8  # Number of frames to stack (q+1 look-back window)
   unroll_steps: 5  # Number of steps to unroll (w roll-ahead actions)
   td_steps: 10  # TD-lambda steps for value target
-  discount: 0.997  # Gamma discount factor
-  batch_size: 32
-  learning_rate: 0.001  # 1e-3
-  weight_decay: 0.00001  # 1e-5
-  grad_clip: 5.0  # Gradient clipping norm
+  discount: 0.997  # Gamma discount factor (matches MCTS)
+  batch_size: 64  # Increased from 32 for more stable gradients
+  learning_rate: 0.0005  # 5e-4 (reduced from 1e-3)
+  weight_decay: 0.0001  # 1e-4 (increased for regularization)
+  grad_clip: 10.0  # Gradient clipping norm
   
   # Loss weights
   policy_loss_weight: 1.0
@@ -30,14 +30,17 @@ training:
   reward_loss_weight: 1.0
   
   # Training schedule
-  train_interval_episodes: 1  # Train every N episodes
-  min_buffer_episodes: 5  # Minimum episodes in buffer before training
-  train_batches_per_interval: 50  # Number of batches to train per interval
+  # MCTS is the main cost driver, so we avoid training every single episode.
+  train_interval_episodes: 2  # Train every N episodes
+  min_buffer_episodes: 20  # Let buffer diversify before training
+  train_batches_per_interval: 50  # Fewer batches per interval to keep wall-time reasonable
 
 # MCTS settings
 mcts:
+  # Big speed/perf lever: these two control most of the compute.
+  # 50x8 is usually a much better training-time tradeoff than 100x10.
   num_simulations: 50  # Number of MCTS simulations per move
-  max_depth: 5  # Maximum search depth
+  max_depth: 8  # Maximum search depth
   pb_c_base: 19652  # UCB constant base
   pb_c_init: 1.25  # UCB constant init
   dirichlet_alpha: 0.25  # Dirichlet noise alpha
@@ -49,11 +52,14 @@ buffer:
 
 # Action selection
 action_selection:
-  temperature: 1.0  # Temperature for action sampling (lower = more greedy)
+  temperature: 1.0  # Initial temperature for action sampling (lower = more greedy)
+  # Decay a bit slower than before to keep exploration longer.
+  temperature_decay: 0.997  # Multiply temperature by this after each episode
+  min_temperature: 0.1  # Minimum temperature (prevents too greedy early)
 
 # Checkpointing and results
 checkpointing:
-  save_interval_episodes: 10  # Save model checkpoint every N episodes
+  save_interval_episodes: 100  # Save model checkpoint every N episodes
   results_dir: muzero_results  # Base directory for saving results
 
 # Logging

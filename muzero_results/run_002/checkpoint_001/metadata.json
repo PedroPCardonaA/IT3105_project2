@@ -1,0 +1,13 @@
+{
+  "checkpoint_num": 1,
+  "episode_num": 2,
+  "episode_return": 0,
+  "training_step": 4,
+  "timestamp": "2026-01-07T13:22:20.888489",
+  "current_metrics": {
+    "loss": 5.28330659866333,
+    "policy_loss": 5.274601936340332,
+    "reward_loss": 0.003276833798736334,
+    "value_loss": 0.0054280441254377365
+  }
+}

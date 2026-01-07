@@ -1,0 +1,36 @@
+action_selection:
+  temperature: 1.0
+buffer:
+  capacity: 10
+environment:
+  max_steps_per_episode: 10
+  name: breakout
+  seed: 42
+logging:
+  print_every: 1
+  verbose: true
+mcts:
+  dirichlet_alpha: 0.25
+  max_depth: 2
+  num_simulations: 5
+  pb_c_base: 19652
+  pb_c_init: 1.25
+  root_exploration_frac: 0.25
+network:
+  hidden_dim: 64
+training:
+  batch_size: 2
+  discount: 0.99
+  grad_clip: 5.0
+  history_len: 4
+  learning_rate: 0.001
+  min_buffer_episodes: 1
+  num_episodes: 2
+  policy_loss_weight: 1.0
+  reward_loss_weight: 1.0
+  td_steps: 3
+  train_batches_per_interval: 2
+  train_interval_episodes: 1
+  unroll_steps: 2
+  value_loss_weight: 1.0
+  weight_decay: 1.0e-05

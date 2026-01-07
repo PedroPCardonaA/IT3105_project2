@@ -1,10 +1,19 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Protocol
 import jax
 import jax.numpy as jnp
 import random
-from .network import MuZeroNet
+
+
+class MuZeroNetwork(Protocol):
+    def pred(self, hidden: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        ...
+
+    def recurrent_inference(
+        self, hidden: jnp.ndarray, action: jnp.ndarray
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        ...
 
 @dataclass(frozen=True)
 class MCTSconfig:
@@ -43,7 +52,7 @@ def softmax_sample(logits: jnp.ndarray) -> jnp.ndarray:
     return e / jnp.sum(e)
 
 class MuZeroMCTS:
-    def __init__(self, config: MCTSconfig, num_actions: int, network: MuZeroNet):
+    def __init__(self, config: MCTSconfig, num_actions: int, network: MuZeroNetwork):
 
         self.config = config
         self.num_actions = num_actions
@@ -132,13 +141,16 @@ class MuZeroMCTS:
         return selected_action, selected_child
     
     def _ucb_score(self, parent: MCTSNode, child: MCTSNode, total_visit_count: int) -> float:
+        """Compute PUCT score: Q(s,a) + U(s,a) where U includes prior and exploration."""
+        # Exploration term with adaptive UCB constant
         pb_c = jnp.log((total_visit_count + self.config.pb_c_base + 1) / self.config.pb_c_base) + self.config.pb_c_init
         pb_c *= jnp.sqrt(total_visit_count) / (child.visit_count + 1)
 
         prior_score = pb_c * child.prior
-        value_score = child.value()
+        # Q-value: mean value from this action
+        q_value = child.value()
 
-        return float(prior_score + value_score)
+        return float(q_value + prior_score)
 
     def _rollout(self, hidden: jnp.ndarray, depth: int) -> float:
         if depth == 0:
@@ -151,12 +163,45 @@ class MuZeroMCTS:
         return float(reward) + self.config.discount * value_from_next
     
     def _backpropagate(self, search_path: List[Tuple[MCTSNode, int]], value: float) -> None:
-        for node, _ in reversed(search_path):
+        """Backpropagate value estimates up the search tree.
+        
+        At each node, we update the value estimate by incorporating the reward
+        received when transitioning to the child plus the discounted value of the child.
+        """
+        # Update statistics along the selected path.
+        # We must increment visit counts of the *children* that were selected;
+        # the root policy is derived from children visit counts.
+        for node, action in reversed(search_path):
+            child = node.children.get(action)
+            if child is None:
+                value = self.config.discount * value
+                continue
+
+            child.value_sum += value
+            child.visit_count += 1
+
+            # Also track parent visits/values for diagnostics (root.value()).
             node.value_sum += value
             node.visit_count += 1
-            value = node.reward + self.config.discount * value
+
+            value = child.reward + self.config.discount * value
 
     def _policy_from_visits(self, root: MCTSNode) -> jnp.ndarray:
-        visit_counts = jnp.array([root.children[a].visit_count for a in range(self.num_actions)], dtype=jnp.float32)
-        policy = visit_counts / jnp.sum(visit_counts)
-        return policy
+        visit_counts = jnp.array(
+            [root.children[a].visit_count for a in range(self.num_actions)],
+            dtype=jnp.float32,
+        )
+        total = jnp.sum(visit_counts)
+
+        # If the tree didn't record any visits (can happen early / with bugs),
+        # fall back to priors to avoid NaNs.
+        def from_priors() -> jnp.ndarray:
+            priors = jnp.array([root.children[a].prior for a in range(self.num_actions)], dtype=jnp.float32)
+            priors_sum = jnp.sum(priors)
+            return jnp.where(
+                priors_sum > 0,
+                priors / priors_sum,
+                jnp.ones((self.num_actions,), dtype=jnp.float32) / self.num_actions,
+            )
+
+        return jnp.where(total > 0, visit_counts / total, from_priors())

@@ -3,13 +3,14 @@ from dataclasses import dataclass
 from typing import List, Tuple
 import random
 import jax.numpy as jnp
+import numpy as np
 
 @dataclass
 class StepData:
-    obs: jnp.ndarray        
+    obs: np.ndarray
     action: int            
     reward: float          
-    policy: jnp.ndarray     
+    policy: np.ndarray
     root_value: float      
     done: bool
 
